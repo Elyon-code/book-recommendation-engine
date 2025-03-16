@@ -52,5 +52,19 @@ with app.app_context():
 def home():
     return "Hello, World! Welcome to the Book Recommendation Engine!"
 
+
+@app.route('/books')
+def get_books():
+    books = Book.query.all()
+    book_list = []
+    for book in books:
+        book_list.append({
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre
+        })
+    return {"books": book_list}
+
 if __name__ == '__main__':
     app.run(debug=True)
