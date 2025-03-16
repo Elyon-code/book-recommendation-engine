@@ -1,3 +1,5 @@
+# Book Recommendation Engine - Built with Flask and SQLAlchemy
+
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 
