@@ -19,3 +19,5 @@ A simple book recommendation engine built with Flask, SQLite, and HTML/CSS.
 - Database setup completed.
 - Sample books added to the database.
 - Next step: Implement the recommendation logic.
+
+- Currently working on a paper so I can't d0 much on my project right now
