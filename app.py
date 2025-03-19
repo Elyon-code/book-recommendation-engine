@@ -78,6 +78,21 @@ def get_book(id):
         "genre": book.genre
     }
 
+@app.route('/books/genre/<string:genre>')
+def get_books_by_genre(genre):
+    books = Book.query.filter_by(genre=genre).all()
+    if not books:
+        return {"error": "No books found for this genre"}, 404
+    book_list = []
+    for book in books:
+        book_list.append({
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre
+        })
+    return {"books": book_list}
+
 @app.errorhandler(404)
 def not_found(error):
     return {"error": "Resource not found"}, 404
