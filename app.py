@@ -78,6 +78,9 @@ def get_book(id):
         "genre": book.genre
     }
 
+@app.errorhandler(404)
+def not_found(error):
+    return {"error": "Resource not found"}, 404
 
 if __name__ == '__main__':
     app.run(debug=True)
