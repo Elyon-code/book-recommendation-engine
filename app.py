@@ -68,5 +68,16 @@ def get_books():
         })
     return {"books": book_list}
 
+@app.route('/books/<int:id>')
+def get_book(id):
+    book = Book.query.get_or_404(id)
+    return {
+        "id": book.id,
+        "title": book.title,
+        "author": book.author,
+        "genre": book.genre
+    }
+
+
 if __name__ == '__main__':
     app.run(debug=True)
