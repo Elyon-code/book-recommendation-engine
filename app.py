@@ -97,5 +97,9 @@ def get_books_by_genre(genre):
 def not_found(error):
     return {"error": "Resource not found"}, 404
 
+@app.route('/health')
+def health_check():
+    return {"status": "healthy", "message": "Book Recommendation API is running"}, 200
+
 if __name__ == '__main__':
     app.run(debug=True)
