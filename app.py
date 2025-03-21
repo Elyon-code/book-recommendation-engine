@@ -75,6 +75,19 @@ def get_books():
         "current_page": page
     }
 
+from sqlalchemy import func  # Add this import at the top
+
+@app.route('/books/random')
+def get_random_books():
+    random_books = Book.query.order_by(func.random()).limit(3).all()
+    book_list = [{
+        "id": book.id,
+        "title": book.title,
+        "author": book.author,
+        "genre": book.genre
+    } for book in random_books]
+    return {"recommendations": book_list}
+
 @app.route('/books/<int:id>')
 def get_book(id):
     book = Book.query.get_or_404(id)
