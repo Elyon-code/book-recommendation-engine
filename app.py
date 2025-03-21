@@ -55,18 +55,25 @@ def home():
     return "Hello, World! Welcome to the Book Recommendation Engine!"
 
 
+from flask import request  # Add this import at the top
+
+# Update the existing /books route
 @app.route('/books')
 def get_books():
-    books = Book.query.all()
-    book_list = []
-    for book in books:
-        book_list.append({
-            "id": book.id,
-            "title": book.title,
-            "author": book.author,
-            "genre": book.genre
-        })
-    return {"books": book_list}
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 5, type=int)
+    books = Book.query.paginate(page=page, per_page=per_page)
+    book_list = [{
+        "id": book.id,
+        "title": book.title,
+        "author": book.author,
+        "genre": book.genre
+    } for book in books.items]
+    return {
+        "books": book_list,
+        "total_pages": books.pages,
+        "current_page": page
+    }
 
 @app.route('/books/<int:id>')
 def get_book(id):
