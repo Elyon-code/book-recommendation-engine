@@ -147,5 +147,21 @@ def register_user():
     db.session.commit()
     return {"message": "User created successfully"}, 201
 
+# New recommendation endpoint
+@app.route('/recommend/<int:user_id>')
+def get_recommendations(user_id):
+    user_ratings = Rating.query.filter_by(user_id=user_id).all()
+    if not user_ratings:
+        return {"message": "Rate books to get recommendations"}, 400
+    
+    # Simple logic: Recommend books from most-rated genre
+    favorite_genre = db.session.query(
+        Book.genre,
+        db.func.count(Rating.id).label('total')
+    ).join(Rating).group_by(Book.genre).order_by(db.desc('total')).first()[0]
+
+    recommended_books = Book.query.filter_by(genre=favorite_genre).limit(5).all()
+    return {"recommendations": [b.title for b in recommended_books]}
+
 if __name__ == '__main__':
     app.run(debug=True)
