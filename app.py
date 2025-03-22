@@ -2,8 +2,20 @@
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+# Add after app initialization
+.
 
 app = Flask(__name__)
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
 
 # Configure SQLite database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///books.db'
@@ -137,6 +149,7 @@ def health_check():
 
 # Add new route
 @app.route('/register', methods=['POST'])
+@limiter.limit("10/hour")
 def register_user():
     data = request.get_json()
     if not data or 'username' not in data or 'email' not in data:
