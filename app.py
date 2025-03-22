@@ -4,7 +4,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required
 # Add after app initialization
 .
 
@@ -20,6 +20,8 @@ limiter = Limiter(
 # Configure SQLite database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///books.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config["JWT_SECRET_KEY"] = "your-super-secret-key"  # Change in production!
+jwt = JWTManager(app)
 
 # Initialize the database
 db = SQLAlchemy(app)
@@ -168,6 +170,7 @@ def register_user():
 
 # New recommendation endpoint
 @app.route('/recommend/<int:user_id>')
+@jwt_required()
 def get_recommendations(user_id):
     user_ratings = Rating.query.filter_by(user_id=user_id).all()
     if not user_ratings:
@@ -181,6 +184,17 @@ def get_recommendations(user_id):
 
     recommended_books = Book.query.filter_by(genre=favorite_genre).limit(5).all()
     return {"recommendations": [b.title for b in recommended_books]}
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data.get('username')).first()
+    if not user:
+        return {"error": "Invalid credentials"}, 401
+    access_token = create_access_token(identity=user.id)
+    return {"access_token": access_token}, 200
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
