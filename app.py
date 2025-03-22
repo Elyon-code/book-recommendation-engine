@@ -1,10 +1,12 @@
 # Book Recommendation Engine - Built with Flask and SQLAlchemy
 
-from flask import Flask
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+from sqlalchemy import func
+
 # Add after app initialization
 .
 
@@ -49,6 +51,38 @@ class Rating(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     book_id = db.Column(db.Integer, db.ForeignKey('book.id'), nullable=False)
     score = db.Column(db.Integer, nullable=False)
+
+# ---- Collaborative Filtering Logic ----
+def get_similar_users(user_id, min_common_books=3):
+    """Find users with similar ratings patterns"""
+    current_user_ratings = Rating.query.filter_by(user_id=user_id).all()
+    current_books = {r.book_id: r.score for r in current_user_ratings}
+
+    all_users = User.query.filter(User.id != user_id).all()
+    similarities = []
+
+    for user in all_users:
+        user_ratings = {r.book_id: r.score for r in user.ratings}
+        common_books = set(current_books.keys()) & set(user_ratings.keys())
+
+        if len(common_books) >= min_common_books:
+            # Calculate Pearson correlation
+            sum1 = sum(current_books[b] for b in common_books)
+            sum2 = sum(user_ratings[b] for b in common_books)
+            sum1_sq = sum(pow(current_books[b], 2) for b in common_books)
+            sum2_sq = sum(pow(user_ratings[b], 2) for b in common_books)
+            p_sum = sum(current_books[b] * user_ratings[b] for b in common_books)
+            
+            n = len(common_books)
+            numerator = p_sum - (sum1 * sum2 / n)
+            denominator = ((sum1_sq - pow(sum1, 2)/n) * (sum2_sq - pow(sum2, 2)/n)) ** 0.5
+            
+            if denominator != 0:
+                similarity = numerator / denominator
+                similarities.append((user.id, similarity))
+
+    # Return top 5 similar users
+    return sorted(similarities, key=lambda x: x[1], reverse=True)[:5]
 
 # Create the database and tables
 with app.app_context():
@@ -172,18 +206,33 @@ def register_user():
 @app.route('/recommend/<int:user_id>')
 @jwt_required()
 def get_recommendations(user_id):
-    user_ratings = Rating.query.filter_by(user_id=user_id).all()
-    if not user_ratings:
-        return {"message": "Rate books to get recommendations"}, 400
-    
-    # Simple logic: Recommend books from most-rated genre
-    favorite_genre = db.session.query(
-        Book.genre,
-        db.func.count(Rating.id).label('total')
-    ).join(Rating).group_by(Book.genre).order_by(db.desc('total')).first()[0]
+    # Check if user exists
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
 
-    recommended_books = Book.query.filter_by(genre=favorite_genre).limit(5).all()
-    return {"recommendations": [b.title for b in recommended_books]}
+    # Get similar users
+    similar_users = get_similar_users(user_id)
+    if not similar_users:
+        return jsonify({"message": "Not enough data for recommendations. Rate more books!"}), 200
+
+    # Get books rated by similar users (that current user hasn't rated)
+    similar_user_ids = [u[0] for u in similar_users]
+    user_rated_books = {r.book_id for r in user.ratings}
+
+    recommended_books = db.session.query(Book).join(Rating).filter(
+        Rating.user_id.in_(similar_user_ids),
+        ~Book.id.in_(user_rated_books)
+    ).group_by(Book.id).order_by(db.desc(db.func.avg(Rating.score))).limit(10).all()
+
+    return jsonify({
+        "recommendations": [{
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre
+        } for book in recommended_books]
+    })
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -193,8 +242,6 @@ def login():
         return {"error": "Invalid credentials"}, 401
     access_token = create_access_token(identity=user.id)
     return {"access_token": access_token}, 200
-
-
 
 if __name__ == '__main__':
     app.run(debug=True)
