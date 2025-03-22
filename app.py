@@ -139,6 +139,12 @@ def health_check():
 @app.route('/register', methods=['POST'])
 def register_user():
     data = request.get_json()
+    if not data or 'username' not in data or 'email' not in data:
+        return {"error": "Missing required fields"}, 400
+    if User.query.filter_by(username=data['username']).first():
+        return {"error": "Username already exists"}, 409
+    if User.query.filter_by(email=data['email']).first():
+        return {"error": "Email already registered"}, 409
     new_user = User(
         username=data['username'],
         email=data['email']
