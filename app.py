@@ -211,6 +211,14 @@ def get_users():
     } for user in users]
     return {"users": user_list}
 
+@app.route('/users/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def delete_user(user_id):
+    user = User.query.get_or_404(user_id)
+    db.session.delete(user)
+    db.session.commit()
+    return {"message": "User deleted successfully"}, 200
+
 # New recommendation endpoint
 @app.route('/recommend/<int:user_id>')
 @jwt_required()
