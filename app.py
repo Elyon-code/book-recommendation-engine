@@ -187,6 +187,17 @@ def get_books_by_genre(genre):
         })
     return {"books": book_list}
 
+@app.route('/ratings')
+def get_ratings():
+    ratings = Rating.query.all()
+    rating_list = [{
+        "id": rating.id,
+        "user_id": rating.user_id,
+        "book_id": rating.book_id,
+        "score": rating.score
+    } for rating in ratings]
+    return {"ratings": rating_list}
+
 @app.errorhandler(404)
 def not_found(error):
     return {"error": "Resource not found"}, 404
