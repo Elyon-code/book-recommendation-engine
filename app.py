@@ -159,6 +159,19 @@ def get_book(id):
         "genre": book.genre
     }
 
+@app.route('/books/<int:id>', methods=['PUT'])
+def update_book(id):
+    book = Book.query.get_or_404(id)
+    data = request.get_json()
+    if 'title' in data:
+        book.title = data['title']
+    if 'author' in data:
+        book.author = data['author']
+    if 'genre' in data:
+        book.genre = data['genre']
+    db.session.commit()
+    return {"message": "Book updated successfully"}, 200
+
 @app.route('/books/genre/<string:genre>')
 def get_books_by_genre(genre):
     books = Book.query.filter_by(genre=genre).all()
