@@ -201,6 +201,16 @@ def register_user():
     db.session.commit()
     return {"message": "User created successfully"}, 201
 
+@app.route('/users')
+def get_users():
+    users = User.query.all()
+    user_list = [{
+        "id": user.id,
+        "username": user.username,
+        "email": user.email
+    } for user in users]
+    return {"users": user_list}
+
 # New recommendation endpoint
 @app.route('/recommend/<int:user_id>')
 @jwt_required()
