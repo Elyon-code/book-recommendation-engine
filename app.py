@@ -198,6 +198,12 @@ def get_ratings():
     } for rating in ratings]
     return {"ratings": rating_list}
 
+@app.route('/books/<int:id>/average-rating')
+def get_average_rating(id):
+    book = Book.query.get_or_404(id)
+    average_rating = db.session.query(db.func.avg(Rating.score)).filter_by(book_id=id).scalar()
+    return {"book_id": book.id, "average_rating": round(float(average_rating or 0), 2)}
+
 @app.errorhandler(404)
 def not_found(error):
     return {"error": "Resource not found"}, 404
