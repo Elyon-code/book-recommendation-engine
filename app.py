@@ -149,6 +149,18 @@ def get_random_books():
     } for book in random_books]
     return {"recommendations": book_list}
 
+@app.route('/books/random-single')
+def get_random_single_book():
+    book = Book.query.order_by(func.random()).first()
+    if not book:
+        return {"error": "No books found"}, 404
+    return {
+        "id": book.id,
+        "title": book.title,
+        "author": book.author,
+        "genre": book.genre
+    }
+
 @app.route('/books/<int:id>')
 def get_book(id):
     book = Book.query.get_or_404(id)
