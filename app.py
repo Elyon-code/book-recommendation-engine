@@ -307,5 +307,9 @@ def login():
     access_token = create_access_token(identity=user.id)
     return {"access_token": access_token}, 200
 
+@app.route('/status')
+def status():
+    return {"status": "active", "timestamp": datetime.datetime.now().isoformat()}
+
 if __name__ == '__main__':
     app.run(debug=True)
