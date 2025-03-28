@@ -311,5 +311,20 @@ def login():
 def status():
     return {"status": "active", "timestamp": datetime.datetime.now().isoformat()}
 
+# Add at the top with other imports
+import datetime
+
+# Add after Book model
+book_count_cache = {
+    "count": None,
+    "last_updated": None
+}
+
+def update_book_count_cache():
+    book_count_cache["count"] = Book.query.count()
+    book_count_cache["last_updated"] = datetime.datetime.now()
+
+    
+
 if __name__ == '__main__':
     app.run(debug=True)
