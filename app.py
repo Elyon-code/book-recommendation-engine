@@ -1,330 +1,384 @@
-# Book Recommendation Engine - Built with Flask and SQLAlchemy
+"""
+Book Recommendation Engine - Production Ready
+Flask API with SQLAlchemy, JWT Auth, and Collaborative Filtering
+"""
 
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
-from sqlalchemy import func
+from sqlalchemy import func, and_
+import os
+from dotenv import load_dotenv
 
-# Add after app initialization
+# Load environment variables
+load_dotenv()
 
+# Initialize Flask app
 app = Flask(__name__)
 
+# Configuration
+app.config.update({
+    'SQLALCHEMY_DATABASE_URI': os.getenv('DATABASE_URL', 'sqlite:///books.db'),
+    'SQLALCHEMY_TRACK_MODIFICATIONS': False,
+    'JWT_SECRET_KEY': os.getenv('JWT_SECRET_KEY', 'your-super-secret-key'),
+    'JWT_ACCESS_TOKEN_EXPIRES': timedelta(hours=1)
+})
+
+# Initialize extensions
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://"
 )
 
-
-# Configure SQLite database
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///books.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config["JWT_SECRET_KEY"] = "your-super-secret-key"  # Change in production!
-jwt = JWTManager(app)
-
-# Initialize the database
-db = SQLAlchemy(app)
-
-# Define the Book model
+# --- Models ---
 class Book(db.Model):
+    """Book model with basic information"""
+    __tablename__ = 'books'
+    
     id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(100), nullable=False)
-    author = db.Column(db.String(100), nullable=False)
-    genre = db.Column(db.String(50), nullable=False)
+    title = db.Column(db.String(100), nullable=False, index=True)
+    author = db.Column(db.String(100), nullable=False, index=True)
+    genre = db.Column(db.String(50), nullable=False, index=True)
+    description = db.Column(db.Text)
+    published_year = db.Column(db.Integer)
+    ratings = db.relationship('Rating', backref='book', lazy=True)
 
     def __repr__(self):
         return f"<Book {self.title}>"
-    
-# Add after Book model
+
 class User(db.Model):
+    """User model for authentication"""
+    __tablename__ = 'users'
+    
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    ratings = db.relationship('Rating', backref='book', lazy=True)
+    password_hash = db.Column(db.String(128))  # In production, use proper hashing
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    ratings = db.relationship('Rating', backref='user', lazy=True)
 
-# Add new model
 class Rating(db.Model):
+    """Rating model connecting users and books"""
+    __tablename__ = 'ratings'
+    
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    book_id = db.Column(db.Integer, db.ForeignKey('book.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    book_id = db.Column(db.Integer, db.ForeignKey('books.id'), nullable=False)
     score = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# ---- Collaborative Filtering Logic ----
-def get_similar_users(user_id, min_common_books=3):
-    """Find users with similar ratings patterns"""
-    current_user_ratings = Rating.query.filter_by(user_id=user_id).all()
-    current_books = {r.book_id: r.score for r in current_user_ratings}
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'book_id', name='unique_user_book_rating'),
+    )
 
-    all_users = User.query.filter(User.id != user_id).all()
-    similarities = []
+# --- Helper Functions ---
+def calculate_similarity(user1_id, user2_id):
+    """Calculate Pearson correlation between two users"""
+    user1_ratings = {r.book_id: r.score for r in Rating.query.filter_by(user_id=user1_id).all()}
+    user2_ratings = {r.book_id: r.score for r in Rating.query.filter_by(user_id=user2_id).all()}
+    
+    common_books = set(user1_ratings.keys()) & set(user2_ratings.keys())
+    n = len(common_books)
+    
+    if n < 3:  # Minimum 3 common ratings for meaningful similarity
+        return 0
+    
+    # Calculate Pearson correlation
+    sum1 = sum(user1_ratings[b] for b in common_books)
+    sum2 = sum(user2_ratings[b] for b in common_books)
+    sum1_sq = sum(pow(user1_ratings[b], 2) for b in common_books)
+    sum2_sq = sum(pow(user2_ratings[b], 2) for b in common_books)
+    p_sum = sum(user1_ratings[b] * user2_ratings[b] for b in common_books)
+    
+    num = p_sum - (sum1 * sum2 / n)
+    den = ((sum1_sq - pow(sum1, 2)/n) * (sum2_sq - pow(sum2, 2)/n)) ** 0.5
+    
+    return num / den if den != 0 else 0
 
-    for user in all_users:
-        user_ratings = {r.book_id: r.score for r in user.ratings}
-        common_books = set(current_books.keys()) & set(user_ratings.keys())
+def get_user_preferred_genres(user_id, top_n=2):
+    """Get user's top preferred genres based on their ratings"""
+    genre_scores = db.session.query(
+        Book.genre,
+        db.func.avg(Rating.score).label('avg_rating'),
+        db.func.count(Rating.id).label('count')
+    ).join(Rating).filter(
+        Rating.user_id == user_id
+    ).group_by(Book.genre).all()
+    
+    if not genre_scores:
+        return None
+    
+    # Sort by average rating (weighted by number of ratings)
+    preferred = sorted(
+        genre_scores,
+        key=lambda x: (x.avg_rating * min(x.count, 5)),  # Cap influence of many ratings
+        reverse=True
+    )
+    return [g.genre for g in preferred[:top_n]]
 
-        if len(common_books) >= min_common_books:
-            # Calculate Pearson correlation
-            sum1 = sum(current_books[b] for b in common_books)
-            sum2 = sum(user_ratings[b] for b in common_books)
-            sum1_sq = sum(pow(current_books[b], 2) for b in common_books)
-            sum2_sq = sum(pow(user_ratings[b], 2) for b in common_books)
-            p_sum = sum(current_books[b] * user_ratings[b] for b in common_books)
-            
-            n = len(common_books)
-            numerator = p_sum - (sum1 * sum2 / n)
-            denominator = ((sum1_sq - pow(sum1, 2)/n) * (sum2_sq - pow(sum2, 2)/n)) ** 0.5
-            
-            if denominator != 0:
-                similarity = numerator / denominator
-                similarities.append((user.id, similarity))
-
-    # Return top 5 similar users
-    return sorted(similarities, key=lambda x: x[1], reverse=True)[:5]
-
-# Create the database and tables
-with app.app_context():
-    db.create_all()
-
-    # Check if the database is empty
-    is_empty = not Book.query.first()
-    print("Is database empty?", is_empty)
-
-    if is_empty:
-        # Add sample books
-        book1 = Book(title="The Great Gatsby", author="F. Scott Fitzgerald", genre="Classic")
-        book2 = Book(title="To Kill a Mockingbird", author="Harper Lee", genre="Fiction")
-        book3 = Book(title="1984", author="George Orwell", genre="Dystopian")
-        book4 = Book(title="Pride and Prejudice", author="Jane Austen", genre="Romance")
-        book5 = Book(title="The Catcher in the Rye", author="J.D. Salinger", genre="Coming-of-Age")
-
-        # Add books to the session
-        db.session.add(book1)
-        db.session.add(book2)
-        db.session.add(book3)
-        db.session.add(book4)
-        db.session.add(book5)
-
-        # Commit the changes
-        db.session.commit()
-        print("Sample books added to the database!")
-
-# Home route
+# --- Routes ---
 @app.route('/')
 def home():
-    return "Hello, World! Welcome to the Book Recommendation Engine!"
+    """Health check endpoint"""
+    return jsonify({
+        "status": "running",
+        "version": "1.0",
+        "documentation": "/docs"  # Would link to API docs in production
+    })
 
-
-from flask import request  # Add this import at the top
-
-# Update the existing /books route
-@app.route('/books')
+@app.route('/books', methods=['GET'])
 def get_books():
+    """Get paginated list of books with optional filtering"""
     page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 5, type=int)
-    books = Book.query.paginate(page=page, per_page=per_page)
-    book_list = [{
-        "id": book.id,
-        "title": book.title,
-        "author": book.author,
-        "genre": book.genre
-    } for book in books.items]
-    return {
-        "books": book_list,
-        "total_pages": books.pages,
-        "current_page": page
-    }
-
-from sqlalchemy import func  # Add this import at the top
-
-@app.route('/books/random')
-def get_random_books():
-    random_books = Book.query.order_by(func.random()).limit(3).all()
-    book_list = [{
-        "id": book.id,
-        "title": book.title,
-        "author": book.author,
-        "genre": book.genre
-    } for book in random_books]
-    return {"recommendations": book_list}
-
-@app.route('/books/random-single')
-def get_random_single_book():
-    book = Book.query.order_by(func.random()).first()
-    if not book:
-        return {"error": "No books found"}, 404
-    return {
-        "id": book.id,
-        "title": book.title,
-        "author": book.author,
-        "genre": book.genre
-    }
-
-@app.route('/books/<int:id>')
-def get_book(id):
-    book = Book.query.get_or_404(id)
-    return {
-        "id": book.id,
-        "title": book.title,
-        "author": book.author,
-        "genre": book.genre
-    }
-
-@app.route('/books/<int:id>', methods=['PUT'])
-def update_book(id):
-    book = Book.query.get_or_404(id)
-    data = request.get_json()
-    if 'title' in data:
-        book.title = data['title']
-    if 'author' in data:
-        book.author = data['author']
-    if 'genre' in data:
-        book.genre = data['genre']
-    db.session.commit()
-    return {"message": "Book updated successfully"}, 200
-
-@app.route('/books/genre/<string:genre>')
-def get_books_by_genre(genre):
-    books = Book.query.filter_by(genre=genre).all()
-    if not books:
-        return {"error": "No books found for this genre"}, 404
-    book_list = []
-    for book in books:
-        book_list.append({
+    per_page = min(request.args.get('per_page', 10, type=int), 50)
+    genre = request.args.get('genre')
+    author = request.args.get('author')
+    
+    query = Book.query
+    
+    if genre:
+        query = query.filter(Book.genre.ilike(f"%{genre}%"))
+    if author:
+        query = query.filter(Book.author.ilike(f"%{author}%"))
+    
+    books = query.paginate(page=page, per_page=per_page, error_out=False)
+    
+    return jsonify({
+        "books": [{
             "id": book.id,
             "title": book.title,
             "author": book.author,
             "genre": book.genre
+        } for book in books.items],
+        "total": books.total,
+        "pages": books.pages,
+        "current_page": page
+    })
+
+@app.route('/books/<int:book_id>', methods=['GET', 'PUT'])
+def book_detail(book_id):
+    """Get or update a specific book"""
+    book = Book.query.get_or_404(book_id)
+    
+    if request.method == 'GET':
+        return jsonify({
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre,
+            "description": book.description,
+            "published_year": book.published_year,
+            "average_rating": db.session.query(
+                db.func.avg(Rating.score)
+            ).filter_by(book_id=book_id).scalar() or 0
         })
-    return {"books": book_list}
+    
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
+        # Update only provided fields
+        if 'title' in data:
+            book.title = data['title']
+        if 'author' in data:
+            book.author = data['author']
+        if 'genre' in data:
+            book.genre = data['genre']
+        if 'description' in data:
+            book.description = data['description']
+        if 'published_year' in data:
+            book.published_year = data['published_year']
+            
+        db.session.commit()
+        return jsonify({"message": "Book updated successfully"})
 
-@app.route('/ratings')
-def get_ratings():
-    ratings = Rating.query.all()
-    rating_list = [{
-        "id": rating.id,
-        "user_id": rating.user_id,
-        "book_id": rating.book_id,
-        "score": rating.score
-    } for rating in ratings]
-    return {"ratings": rating_list}
+@app.route('/books/random', methods=['GET'])
+def random_books():
+    """Get random selection of books"""
+    count = min(request.args.get('count', 3, type=int), 10)
+    books = Book.query.order_by(func.random()).limit(count).all()
+    
+    return jsonify({
+        "books": [{
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "genre": book.genre
+        } for book in books]
+    })
 
-@app.route('/books/<int:id>/average-rating')
-def get_average_rating(id):
-    book = Book.query.get_or_404(id)
-    average_rating = db.session.query(db.func.avg(Rating.score)).filter_by(book_id=id).scalar()
-    return {"book_id": book.id, "average_rating": round(float(average_rating or 0), 2)}
-
-@app.route('/books/count')
-def get_book_count():
-    count = Book.query.count()
-    return {"total_books": count}
-
-@app.errorhandler(404)
-def not_found(error):
-    return {"error": "Resource not found"}, 404
-
-@app.route('/health')
-def health_check():
-    return {"status": "healthy", "message": "Book Recommendation API is running"}, 200
-
-# Add new route
-@app.route('/register', methods=['POST'])
-@limiter.limit("10/hour")
-def register_user():
-    data = request.get_json()
-    if not data or 'username' not in data or 'email' not in data:
-        return {"error": "Missing required fields"}, 400
-    if User.query.filter_by(username=data['username']).first():
-        return {"error": "Username already exists"}, 409
-    if User.query.filter_by(email=data['email']).first():
-        return {"error": "Email already registered"}, 409
-    new_user = User(
-        username=data['username'],
-        email=data['email']
-    )
-    db.session.add(new_user)
-    db.session.commit()
-    return {"message": "User created successfully"}, 201
-
-@app.route('/users')
-def get_users():
-    users = User.query.all()
-    user_list = [{
-        "id": user.id,
-        "username": user.username,
-        "email": user.email
-    } for user in users]
-    return {"users": user_list}
-
-@app.route('/users/<int:user_id>', methods=['DELETE'])
+@app.route('/recommend/<int:user_id>', methods=['GET'])
 @jwt_required()
-def delete_user(user_id):
+def recommend_books(user_id):
+    """Get personalized book recommendations for a user"""
+    # Check user exists
     user = User.query.get_or_404(user_id)
-    db.session.delete(user)
-    db.session.commit()
-    return {"message": "User deleted successfully"}, 200
-
-# New recommendation endpoint
-@app.route('/recommend/<int:user_id>')
-@jwt_required()
-def get_recommendations(user_id):
-    # Check if user exists
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
-    # Get similar users
-    similar_users = get_similar_users(user_id)
-    if not similar_users:
-        return jsonify({"message": "Not enough data for recommendations. Rate more books!"}), 200
-
-    # Get books rated by similar users (that current user hasn't rated)
-    similar_user_ids = [u[0] for u in similar_users]
+    
+    # Strategy 1: Content-based (preferred genres)
+    preferred_genres = get_user_preferred_genres(user_id)
     user_rated_books = {r.book_id for r in user.ratings}
-
-    recommended_books = db.session.query(Book).join(Rating).filter(
-        Rating.user_id.in_(similar_user_ids),
-        ~Book.id.in_(user_rated_books)
-    ).group_by(Book.id).order_by(db.desc(db.func.avg(Rating.score))).limit(10).all()
-
+    
+    if preferred_genres:
+        content_recs = Book.query.filter(
+            Book.genre.in_(preferred_genres),
+            ~Book.id.in_(user_rated_books)
+        ).order_by(func.random()).limit(5).all()
+    else:
+        content_recs = []
+    
+    # Strategy 2: Collaborative filtering
+    all_users = User.query.filter(User.id != user_id).all()
+    similarities = []
+    
+    for other_user in all_users:
+        similarity = calculate_similarity(user_id, other_user.id)
+        if similarity > 0.3:  # Only consider meaningful similarities
+            similarities.append((other_user.id, similarity))
+    
+    # Sort by similarity and get top 5
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    similar_user_ids = [uid for uid, _ in similarities[:5]]
+    
+    if similar_user_ids:
+        collab_recs = db.session.query(Book).join(Rating).filter(
+            Rating.user_id.in_(similar_user_ids),
+            ~Book.id.in_(user_rated_books)
+        ).group_by(Book.id).order_by(
+            db.desc(db.func.avg(Rating.score))
+        ).limit(5).all()
+    else:
+        collab_recs = []
+    
+    # Combine and deduplicate recommendations
+    all_recs = {(b.id, b.title, b.author, b.genre) for b in content_recs + collab_recs}
+    
+    if not all_recs:
+        # Fallback to popular books if no personalized recommendations
+        all_recs = db.session.query(Book).join(Rating).group_by(Book.id).order_by(
+            db.desc(db.func.avg(Rating.score))
+        ).limit(5).all()
+        all_recs = {(b.id, b.title, b.author, b.genre) for b in all_recs}
+    
     return jsonify({
         "recommendations": [{
-            "id": book.id,
-            "title": book.title,
-            "author": book.author,
-            "genre": book.genre
-        } for book in recommended_books]
+            "id": rec[0],
+            "title": rec[1],
+            "author": rec[2],
+            "genre": rec[3]
+        } for rec in all_recs]
     })
+
+@app.route('/ratings', methods=['POST'])
+@jwt_required()
+def add_rating():
+    """Add or update a book rating"""
+    data = request.get_json()
+    if not data or 'book_id' not in data or 'score' not in data:
+        return jsonify({"error": "Missing book_id or score"}), 400
+    
+    try:
+        score = int(data['score'])
+        if not 1 <= score <= 5:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "Score must be integer between 1-5"}), 400
+    
+    user_id = get_jwt_identity()
+    book_id = data['book_id']
+    
+    # Check if book exists
+    if not Book.query.get(book_id):
+        return jsonify({"error": "Book not found"}), 404
+    
+    # Update existing rating or create new one
+    rating = Rating.query.filter_by(user_id=user_id, book_id=book_id).first()
+    if rating:
+        rating.score = score
+    else:
+        rating = Rating(user_id=user_id, book_id=book_id, score=score)
+        db.session.add(rating)
+    
+    db.session.commit()
+    return jsonify({"message": "Rating saved successfully"})
+
+# --- Authentication ---
+@app.route('/register', methods=['POST'])
+@limiter.limit("5/hour")
+def register():
+    """Register a new user"""
+    data = request.get_json()
+    if not data or 'username' not in data or 'email' not in data or 'password' not in data:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({"error": "Username already exists"}), 409
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({"error": "Email already registered"}), 409
+    
+    # In production: hash the password properly (e.g., using bcrypt)
+    new_user = User(
+        username=data['username'],
+        email=data['email'],
+        password_hash=data['password']  # This is simplified - don't do this in production!
+    )
+    
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({"message": "User created successfully"}), 201
 
 @app.route('/login', methods=['POST'])
 def login():
+    """Authenticate user and return JWT token"""
     data = request.get_json()
-    user = User.query.filter_by(username=data.get('username')).first()
-    if not user:
-        return {"error": "Invalid credentials"}, 401
-    access_token = create_access_token(identity=user.id)
-    return {"access_token": access_token}, 200
-
-@app.route('/status')
-def status():
-    return {"status": "active", "timestamp": datetime.datetime.now().isoformat()}
-
-# Add at the top with other imports
-import datetime
-
-# Add after Book model
-book_count_cache = {
-    "count": None,
-    "last_updated": None
-}
-
-def update_book_count_cache():
-    book_count_cache["count"] = Book.query.count()
-    book_count_cache["last_updated"] = datetime.datetime.now()
-
+    if not data or 'username' not in data or 'password' not in data:
+        return jsonify({"error": "Missing username or password"}), 400
     
+    user = User.query.filter_by(username=data['username']).first()
+    if not user or user.password_hash != data['password']:  # Simplified auth
+        return jsonify({"error": "Invalid credentials"}), 401
+    
+    access_token = create_access_token(identity=user.id)
+    return jsonify({
+        "access_token": access_token,
+        "user_id": user.id
+    })
+
+# --- Error Handlers ---
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Resource not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "Internal server error"}), 500
+
+# --- Database Initialization ---
+def initialize_database():
+    """Initialize database with sample data if empty"""
+    with app.app_context():
+        db.create_all()
+        
+        if not Book.query.first():
+            sample_books = [
+                Book(title="The Great Gatsby", author="F. Scott Fitzgerald", genre="Classic"),
+                Book(title="To Kill a Mockingbird", author="Harper Lee", genre="Fiction"),
+                Book(title="1984", author="George Orwell", genre="Dystopian"),
+                Book(title="Pride and Prejudice", author="Jane Austen", genre="Romance"),
+                Book(title="The Catcher in the Rye", author="J.D. Salinger", genre="Coming-of-Age")
+            ]
+            db.session.add_all(sample_books)
+            db.session.commit()
+            print("Sample books added to database")
 
 if __name__ == '__main__':
+    initialize_database()
     app.run(debug=True)
